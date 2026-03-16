@@ -3,132 +3,125 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Pro Smooth Tracker</title>
+    <title>AI Pushup Pro Config</title>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.11.0/dist/tf.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection"></script>
     <style>
         :root { --neon: #00ff41; --bg: #0a0a0a; }
         body { font-family: 'Segoe UI', sans-serif; background: var(--bg); color: white; margin: 0; overflow: hidden; }
         
-        .main-container { position: relative; width: 100vw; height: 100vh; display: flex; flex-direction: column; }
+        /* Layout */
+        .app-container { display: flex; flex-direction: column; height: 100vh; }
+        #viewport { position: relative; flex: 1; background: #000; overflow: hidden; }
         
-        #video-wrap { position: relative; flex: 1; background: #000; display: flex; align-items: center; justify-content: center; }
-        video { position: absolute; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
-        canvas { position: absolute; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); z-index: 5; }
-
-        .hud {
-            position: absolute; top: 20px; left: 20px; right: 20px;
-            display: flex; justify-content: space-between; z-index: 10;
+        /* Video Mirroring Control */
+        video, canvas { 
+            position: absolute; width: 100%; height: 100%; object-fit: contain; 
         }
-        .stat { background: rgba(0,0,0,0.7); padding: 15px; border-left: 4px solid var(--neon); border-radius: 4px; }
-        .stat label { display: block; font-size: 0.7rem; text-transform: uppercase; color: var(--neon); }
-        .stat span { font-size: 1.8rem; font-weight: bold; font-family: monospace; }
+        .mirror-on { transform: scaleX(-1); }
+        .mirror-off { transform: scaleX(1); }
 
-        /* Smooth Progress Bar */
-        .progress-container {
-            position: absolute; right: 20px; top: 50%; transform: translateY(-50%);
-            width: 12px; height: 200px; background: rgba(255,255,255,0.1); border-radius: 10px; z-index: 10;
+        /* HUD & Controls */
+        .hud { position: absolute; top: 15px; left: 15px; z-index: 10; display: flex; gap: 10px; }
+        .stat { background: rgba(0,0,0,0.8); padding: 10px 20px; border: 1px solid var(--neon); border-radius: 8px; }
+        
+        .settings-panel { 
+            background: #1a1a1a; padding: 20px; display: grid; 
+            grid-template-columns: 1fr 1fr; gap: 15px; border-top: 2px solid #333;
         }
-        #progress-fill {
-            position: absolute; bottom: 0; width: 100%; height: 0%;
-            background: var(--neon); border-radius: 10px; transition: height 0.1s ease-out;
-            box-shadow: 0 0 15px var(--neon);
-        }
-
-        #countdown {
-            position: absolute; font-size: 10rem; font-weight: 900; 
-            z-index: 100; pointer-events: none; text-shadow: 0 0 20px #000;
+        
+        .control-group { display: flex; flex-direction: column; gap: 5px; }
+        label { font-size: 0.75rem; color: #888; text-transform: uppercase; }
+        
+        select, input[type="range"], input[type="number"] { 
+            background: #333; color: white; border: 1px solid #555; padding: 8px; border-radius: 5px; 
         }
 
-        .controls { background: #1a1a1a; padding: 25px; display: flex; gap: 15px; align-items: center; justify-content: center; z-index: 20; }
-        input { background: #333; color: white; border: 1px solid #555; padding: 12px; border-radius: 8px; width: 60px; font-size: 1.2rem; }
-        button { background: var(--neon); color: black; border: none; padding: 15px 40px; border-radius: 8px; font-weight: bold; font-size: 1.1rem; cursor: pointer; }
+        button { 
+            grid-column: span 2; background: var(--neon); color: black; border: none; 
+            padding: 15px; border-radius: 8px; font-weight: bold; cursor: pointer;
+        }
+        
+        #angle-debug { position: absolute; bottom: 10px; left: 10px; color: var(--neon); font-family: monospace; z-index: 10; }
     </style>
 </head>
 <body>
 
-    <div class="main-container">
-        <div id="video-wrap">
+    <div class="app-container">
+        <div id="viewport">
             <div class="hud">
-                <div class="stat"><label>Reps</label><span id="rep-count">0</span></div>
-                <div class="stat"><label>Status</label><span id="status-text">WAITING</span></div>
+                <div class="stat"><small>REPS</small><br><span id="rep-count">0</span></div>
+                <div class="stat"><small>ANGLE</small><br><span id="live-angle">0°</span></div>
             </div>
+            
+            <div id="angle-debug">Threshold: <span id="thresh-val">90</span>°</div>
 
-            <div class="progress-container"><div id="progress-fill"></div></div>
-            <div id="countdown"></div>
-
-            <video id="video" autoplay muted playsinline></video>
-            <canvas id="output"></canvas>
+            <video id="video" autoplay muted playsinline class="mirror-on"></video>
+            <canvas id="output" class="mirror-on"></canvas>
         </div>
 
-        <div class="controls">
-            <input type="number" id="goal" value="10">
-            <button id="startBtn">START WORKOUT</button>
+        <div class="settings-panel">
+            <div class="control-group">
+                <label>Camera Source</label>
+                <select id="camSelect"><option value="">Loading...</option></select>
+            </div>
+            <div class="control-group">
+                <label>Mirror View</label>
+                <select id="mirrorSelect">
+                    <option value="mirror-on">On (Selfie)</option>
+                    <option value="mirror-off">Off (Back Cam)</option>
+                </select>
+            </div>
+            <div class="control-group">
+                <label>Difficulty (Down Angle)</label>
+                <input type="range" id="sensRange" min="60" max="120" value="90">
+            </div>
+            <div class="control-group">
+                <label>Goal Reps</label>
+                <input type="number" id="goalInput" value="10">
+            </div>
+            
+            <button id="startBtn">START TRACKING</button>
         </div>
     </div>
 
 <script>
-    let detector, video, canvas, ctx;
-    let count = 0, stage = "up", goal = 10;
-    let angleHistory = []; // For smoothing
-
-    const CONNECTIONS = [
-        ['left_shoulder', 'right_shoulder'], ['left_shoulder', 'left_elbow'], ['left_elbow', 'left_wrist'],
-        ['right_shoulder', 'right_elbow'], ['right_elbow', 'right_wrist'], ['left_shoulder', 'left_hip'],
-        ['right_shoulder', 'right_hip'], ['left_hip', 'right_hip']
-    ];
+    let detector, video, canvas, ctx, currentStream;
+    let count = 0, stage = "up", angleHistory = [];
+    let downThreshold = 90;
 
     async function init() {
         video = document.getElementById('video');
         canvas = document.getElementById('output');
         ctx = canvas.getContext('2d');
-        detector = await poseDetection.createDetector(poseDetection.SupportedModels.MoveNet, {
-            modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING
-        });
+        
+        detector = await poseDetection.createDetector(poseDetection.SupportedModels.MoveNet);
+        
+        // Populate Camera List
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videoDevices = devices.filter(d => d.kind === 'videoinput');
+        const camSelect = document.getElementById('camSelect');
+        camSelect.innerHTML = videoDevices.map(d => `<option value="${d.deviceId}">${d.label || 'Camera '+d.deviceId.slice(0,4)}</option>`).join('');
     }
 
-    async function startCamera() {
-        const stream = await navigator.mediaDevices.getUserMedia({ 
-            video: { facingMode: 'user', width: 640, height: 480 }, audio: false 
-        });
-        video.srcObject = stream;
+    async function startCamera(deviceId) {
+        if (currentStream) currentStream.getTracks().forEach(t => t.stop());
+        
+        const constraints = {
+            video: { 
+                deviceId: deviceId ? { exact: deviceId } : undefined,
+                width: { ideal: 1280 }, // Attempt higher res for "zoom out" feel
+                height: { ideal: 720 }
+            }
+        };
+
+        currentStream = await navigator.mediaDevices.getUserMedia(constraints);
+        video.srcObject = currentStream;
+        
         return new Promise(r => video.onloadedmetadata = () => {
             canvas.width = video.videoWidth;
             canvas.height = video.videoHeight;
             r();
-        });
-    }
-
-    function drawStyledSkeleton(keypoints) {
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        
-        // Draw bones with glow
-        ctx.shadowBlur = 10;
-        ctx.shadowColor = "#00ff41";
-        ctx.strokeStyle = "#00ff41";
-        ctx.lineWidth = 5;
-        ctx.lineCap = "round";
-
-        CONNECTIONS.forEach(([p1n, p2n]) => {
-            const p1 = keypoints.find(k => k.name === p1n);
-            const p2 = keypoints.find(k => k.name === p2n);
-            if (p1.score > 0.3 && p2.score > 0.3) {
-                ctx.beginPath();
-                ctx.moveTo(p1.x, p1.y);
-                ctx.lineTo(p2.x, p2.y);
-                ctx.stroke();
-            }
-        });
-
-        // Draw joints
-        ctx.shadowBlur = 0;
-        keypoints.forEach(kp => {
-            if (kp.score > 0.3) {
-                ctx.fillStyle = "white";
-                ctx.beginPath();
-                ctx.arc(kp.x, kp.y, 4, 0, 2*Math.PI);
-                ctx.fill();
-            }
         });
     }
 
@@ -137,60 +130,59 @@
         return ang > 180 ? 360 - ang : ang;
     }
 
-    async function loop() {
+    async function run() {
         const poses = await detector.estimatePoses(video);
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
         if (poses.length > 0) {
             const kp = poses[0].keypoints;
-            drawStyledSkeleton(kp);
+            
+            // Draw Skeleton
+            ctx.strokeStyle = "#00ff41"; ctx.lineWidth = 6;
+            const connections = [[5,7],[7,9],[6,8],[8,10],[5,6],[5,11],[6,12],[11,12]];
+            connections.forEach(([i, j]) => {
+                if (kp[i].score > 0.3 && kp[j].score > 0.3) {
+                    ctx.beginPath(); ctx.moveTo(kp[i].x, kp[i].y); ctx.lineTo(kp[j].x, kp[j].y); ctx.stroke();
+                }
+            });
 
-            // Logic: Use whichever arm is clearer
-            const left = [kp[5], kp[7], kp[9]];
-            const right = [kp[6], kp[8], kp[10]];
-            const arm = (left[1].score > right[1].score) ? left : right;
+            // Tracking Logic (Best Arm)
+            const arm = (kp[7].score > kp[8].score) ? [kp[5], kp[7], kp[9]] : [kp[6], kp[8], kp[10]];
+            if (arm[1].score > 0.4) {
+                let angle = getAngle(arm[0], arm[1], arm[2]);
+                angleHistory.push(angle);
+                if (angleHistory.length > 4) angleHistory.shift();
+                const avgAngle = angleHistory.reduce((a,b)=>a+b)/angleHistory.length;
 
-            if (arm[0].score > 0.4 && arm[1].score > 0.4) {
-                let rawAngle = getAngle(arm[0], arm[1], arm[2]);
-                
-                // --- SMOOTHING ENGINE ---
-                angleHistory.push(rawAngle);
-                if (angleHistory.length > 5) angleHistory.shift();
-                const smoothAngle = angleHistory.reduce((a,b) => a+b) / angleHistory.length;
+                document.getElementById('live-angle').innerText = Math.round(avgAngle) + "°";
 
-                // Update Progress Bar (Visualizing 160 to 90 degrees)
-                let diff = 160 - smoothAngle;
-                let percent = Math.min(Math.max((diff / 70) * 100, 0), 100);
-                document.getElementById('progress-fill').style.height = percent + "%";
-
-                // Count Logic
-                if (smoothAngle > 155) stage = "up";
-                if (smoothAngle < 90 && stage === "up") {
+                if (avgAngle > 150) stage = "up";
+                if (avgAngle < downThreshold && stage === "up") {
                     stage = "down";
                     count++;
                     document.getElementById('rep-count').innerText = count;
-                    if (navigator.vibrate) navigator.vibrate([40, 30, 40]); 
+                    if (navigator.vibrate) navigator.vibrate(50);
                 }
-                document.getElementById('status-text').innerText = stage.toUpperCase();
             }
         }
-        if (count < goal) requestAnimationFrame(loop);
-        else document.getElementById('status-text').innerText = "DONE!";
+        if (count < document.getElementById('goalInput').value) requestAnimationFrame(run);
     }
 
+    // Event Listeners
+    document.getElementById('sensRange').addEventListener('input', (e) => {
+        downThreshold = e.target.value;
+        document.getElementById('thresh-val').innerText = downThreshold;
+    });
+
+    document.getElementById('mirrorSelect').addEventListener('change', (e) => {
+        video.className = canvas.className = e.target.value;
+    });
+
     document.getElementById('startBtn').addEventListener('click', async () => {
-        goal = document.getElementById('goal').value;
-        await startCamera();
-        
-        let cd = 3;
-        const cdDiv = document.getElementById('countdown');
-        const timer = setInterval(() => {
-            cdDiv.innerText = cd;
-            cd--;
-            if (cd < 0) {
-                clearInterval(timer);
-                cdDiv.innerText = "";
-                loop();
-            }
-        }, 1000);
+        await startCamera(document.getElementById('camSelect').value);
+        count = 0;
+        document.getElementById('rep-count').innerText = "0";
+        run();
     });
 
     init();
