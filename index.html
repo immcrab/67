@@ -62,89 +62,257 @@ button { background: var(--neon); color: black; border: none; padding: 10px 25px
 
 <script>
 let detector, video, canvas, ctx;
-let count = 0, stage = "up", goal = 10, threshold = 90;
+
+let count = 0;
+let stage = "up";
+let goal = 10;
+let threshold = 90;
+
 let angleHistory = [];
+let poseSmooth = [];
+
 const CONNECTIONS = [
-    ['left_shoulder','right_shoulder'], ['left_shoulder','left_elbow'], ['left_elbow','left_wrist'],
-    ['right_shoulder','right_elbow'], ['right_elbow','right_wrist'], ['left_shoulder','left_hip'],
-    ['right_shoulder','right_hip'], ['left_hip','right_hip']
+["left_shoulder","right_shoulder"],
+["left_shoulder","left_elbow"],
+["left_elbow","left_wrist"],
+["right_shoulder","right_elbow"],
+["right_elbow","right_wrist"],
+
+["left_shoulder","left_hip"],
+["right_shoulder","right_hip"],
+["left_hip","right_hip"],
+
+["left_hip","left_knee"],
+["left_knee","left_ankle"],
+["right_hip","right_knee"],
+["right_knee","right_ankle"]
 ];
 
-async function init() {
-    video = document.getElementById('video');
-    canvas = document.getElementById('output');
-    ctx = canvas.getContext('2d');
-    detector = await poseDetection.createDetector(poseDetection.SupportedModels.MoveNet, { modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING });
-    await populateCameras();
+async function init(){
+video = document.getElementById("video");
+canvas = document.getElementById("output");
+ctx = canvas.getContext("2d");
+
+detector = await poseDetection.createDetector(
+poseDetection.SupportedModels.MoveNet,
+{modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING}
+);
+
+await populateCameras();
 }
 
-async function populateCameras() {
-    const devices = await navigator.mediaDevices.enumerateDevices();
-    const select = document.getElementById('cameraSelect');
-    select.innerHTML = '';
-    devices.filter(d=>d.kind==='videoinput').forEach((device,i)=>{
-        const option = document.createElement('option');
-        option.value = device.deviceId;
-        option.innerText = device.label || `Camera ${i+1}`;
-        select.appendChild(option);
-    });
+async function populateCameras(){
+const devices = await navigator.mediaDevices.enumerateDevices();
+const select = document.getElementById("cameraSelect");
+select.innerHTML="";
+
+devices
+.filter(d=>d.kind==="videoinput")
+.forEach((device,i)=>{
+let o=document.createElement("option");
+o.value=device.deviceId;
+o.text=device.label||`Camera ${i+1}`;
+select.appendChild(o);
+});
 }
 
-async function startCamera() {
-    const cameraId = document.getElementById('cameraSelect').value;
-    const stream = await navigator.mediaDevices.getUserMedia({ 
-        video: { deviceId: cameraId ? { exact: cameraId } : undefined, width: {ideal:640}, height: {ideal:480} }, 
-        audio: false 
-    });
-    video.srcObject = stream;
-    return new Promise(r=>video.onloadedmetadata = ()=>{ canvas.width=video.videoWidth; canvas.height=video.videoHeight; r(); });
+async function startCamera(){
+
+const cameraId=document.getElementById("cameraSelect").value;
+
+const stream=await navigator.mediaDevices.getUserMedia({
+video:{
+deviceId:cameraId?{exact:cameraId}:undefined,
+width:{ideal:640},
+height:{ideal:480}
+},
+audio:false
+});
+
+video.srcObject=stream;
+
+return new Promise(r=>{
+video.onloadedmetadata=()=>{
+canvas.width=video.videoWidth;
+canvas.height=video.videoHeight;
+r();
+};
+});
+}
+
+function smoothPose(keypoints){
+
+if(poseSmooth.length===0){
+poseSmooth=keypoints;
+return keypoints;
+}
+
+return keypoints.map((kp,i)=>{
+
+const prev=poseSmooth[i];
+
+return {
+...kp,
+x:prev.x*0.7+kp.x*0.3,
+y:prev.y*0.7+kp.y*0.3
+};
+
+});
 }
 
 function drawSkeleton(keypoints){
-    ctx.clearRect(0,0,canvas.width,canvas.height);
-    ctx.shadowBlur=10; ctx.shadowColor="#00ff41"; ctx.strokeStyle="#00ff41"; ctx.lineWidth=5; ctx.lineCap="round";
-    CONNECTIONS.forEach(([p1n,p2n])=>{
-        const p1 = keypoints.find(k=>k.name===p1n), p2 = keypoints.find(k=>k.name===p2n);
-        if(p1.score>0.3 && p2.score>0.3){ ctx.beginPath(); ctx.moveTo(p1.x,p1.y); ctx.lineTo(p2.x,p2.y); ctx.stroke();}
-    });
-    ctx.shadowBlur=0;
-    keypoints.forEach(kp=>{ if(kp.score>0.3){ ctx.fillStyle="white"; ctx.beginPath(); ctx.arc(kp.x,kp.y,4,0,2*Math.PI); ctx.fill(); } });
+
+ctx.clearRect(0,0,canvas.width,canvas.height);
+
+ctx.strokeStyle="#00ff41";
+ctx.lineWidth=4;
+ctx.lineCap="round";
+
+ctx.shadowBlur=8;
+ctx.shadowColor="#00ff41";
+
+for(const [a,b] of CONNECTIONS){
+
+const p1=keypoints.find(k=>k.name===a);
+const p2=keypoints.find(k=>k.name===b);
+
+if(p1.score>0.35 && p2.score>0.35){
+
+ctx.beginPath();
+ctx.moveTo(p1.x,p1.y);
+ctx.lineTo(p2.x,p2.y);
+ctx.stroke();
+
+}
 }
 
-function getAngle(a,b,c){ let ang=Math.abs(Math.atan2(c.y-b.y,c.x-b.x)-Math.atan2(a.y-b.y,a.x-b.x))*180/Math.PI; return ang>180?360-ang:ang; }
+ctx.shadowBlur=0;
+
+for(const kp of keypoints){
+
+if(kp.score>0.35){
+
+ctx.fillStyle="white";
+
+ctx.beginPath();
+ctx.arc(kp.x,kp.y,4,0,Math.PI*2);
+ctx.fill();
+
+}
+}
+}
+
+function getAngle(a,b,c){
+
+let angle =
+Math.abs(
+Math.atan2(c.y-b.y,c.x-b.x) -
+Math.atan2(a.y-b.y,a.x-b.x)
+);
+
+angle=angle*180/Math.PI;
+
+return angle>180 ? 360-angle : angle;
+}
 
 async function loop(){
-    const poses = await detector.estimatePoses(video);
-    if(poses.length>0){
-        const kp = poses[0].keypoints;
-        drawSkeleton(kp);
 
-        const left=[kp[5],kp[7],kp[9]], right=[kp[6],kp[8],kp[10]];
-        const arm=(left[1].score>right[1].score)?left:right;
-        if(arm[0].score>0.4 && arm[1].score>0.4){
-            let rawAngle=getAngle(arm[0],arm[1],arm[2]);
-            angleHistory.push(rawAngle); if(angleHistory.length>5) angleHistory.shift();
-            const smoothAngle=angleHistory.reduce((a,b)=>a+b)/angleHistory.length;
+const poses=await detector.estimatePoses(video);
 
-            let percent = Math.min(Math.max((160-smoothAngle)/70*100,0),100);
-            document.getElementById('progress-fill').style.height=percent+"%";
+if(poses.length){
 
-            if(smoothAngle>155) stage="up";
-            if(smoothAngle<threshold && stage==="up"){ stage="down"; count++; document.getElementById('rep-count').innerText=count; if(navigator.vibrate) navigator.vibrate([40,30,40]); }
-            document.getElementById('status-text').innerText=stage.toUpperCase();
-        }
-    }
-    if(count<goal) requestAnimationFrame(loop); else document.getElementById('status-text').innerText="DONE!";
+let kp=poses[0].keypoints;
+
+kp=smoothPose(kp);
+poseSmooth=kp;
+
+drawSkeleton(kp);
+
+const left=[kp[5],kp[7],kp[9]];
+const right=[kp[6],kp[8],kp[10]];
+
+const arm = left[1].score > right[1].score ? left : right;
+
+if(arm[0].score>0.4 && arm[1].score>0.4){
+
+let rawAngle=getAngle(arm[0],arm[1],arm[2]);
+
+angleHistory.push(rawAngle);
+
+if(angleHistory.length>6) angleHistory.shift();
+
+const smoothAngle =
+angleHistory.reduce((a,b)=>a+b)/angleHistory.length;
+
+let percent =
+Math.min(
+Math.max((160-smoothAngle)/70*100,0),
+100
+);
+
+document.getElementById("progress-fill").style.height =
+percent+"%";
+
+if(smoothAngle>155) stage="up";
+
+if(smoothAngle<threshold && stage==="up"){
+
+stage="down";
+count++;
+
+document.getElementById("rep-count").innerText=count;
+
+if(navigator.vibrate)
+navigator.vibrate([40,20,40]);
+
 }
 
-document.getElementById('startBtn').addEventListener('click', async ()=>{
-    goal = parseInt(document.getElementById('goal').value)||10;
-    threshold = parseInt(document.getElementById('threshold').value)||90;
-    count=0; document.getElementById('rep-count').innerText=0;
-    await startCamera();
+document.getElementById("status-text").innerText =
+stage.toUpperCase();
 
-    let cd=3; const cdDiv=document.getElementById('countdown');
-    const timer=setInterval(()=>{ cdDiv.innerText=cd; cd--; if(cd<0){ clearInterval(timer); cdDiv.innerText=""; loop(); } },1000);
+}
+}
+
+if(count<goal){
+
+requestAnimationFrame(loop);
+
+}else{
+
+document.getElementById("status-text").innerText="DONE";
+
+}
+}
+
+document.getElementById("startBtn").addEventListener("click",async()=>{
+
+goal=parseInt(document.getElementById("goal").value)||10;
+threshold=parseInt(document.getElementById("threshold").value)||90;
+
+count=0;
+document.getElementById("rep-count").innerText=0;
+
+await startCamera();
+
+let cd=3;
+
+const cdDiv=document.getElementById("countdown");
+
+const timer=setInterval(()=>{
+
+cdDiv.innerText=cd;
+cd--;
+
+if(cd<0){
+
+clearInterval(timer);
+cdDiv.innerText="";
+loop();
+
+}
+
+},1000);
+
 });
 
 init();
