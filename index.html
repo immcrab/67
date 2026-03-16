@@ -3,165 +3,197 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>AI Bone Tracker</title>
+    <title>Pro Smooth Tracker</title>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.11.0/dist/tf.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection"></script>
     <style>
-        body { 
-            font-family: 'Courier New', Courier, monospace; 
-            text-align: center; background: #000; color: #0f0; margin: 0; 
+        :root { --neon: #00ff41; --bg: #0a0a0a; }
+        body { font-family: 'Segoe UI', sans-serif; background: var(--bg); color: white; margin: 0; overflow: hidden; }
+        
+        .main-container { position: relative; width: 100vw; height: 100vh; display: flex; flex-direction: column; }
+        
+        #video-wrap { position: relative; flex: 1; background: #000; display: flex; align-items: center; justify-content: center; }
+        video { position: absolute; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
+        canvas { position: absolute; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); z-index: 5; }
+
+        .hud {
+            position: absolute; top: 20px; left: 20px; right: 20px;
+            display: flex; justify-content: space-between; z-index: 10;
         }
-        .video-container { position: relative; width: 100%; max-width: 640px; margin: 0 auto; }
-        video, canvas { width: 100%; height: auto; border-radius: 15px; }
-        canvas { position: absolute; left: 0; top: 0; z-index: 10; }
-        .ui-overlay {
-            position: absolute; top: 10px; left: 10px; right: 10px;
-            display: flex; justify-content: space-between; z-index: 20;
-            pointer-events: none; text-shadow: 2px 2px #000;
+        .stat { background: rgba(0,0,0,0.7); padding: 15px; border-left: 4px solid var(--neon); border-radius: 4px; }
+        .stat label { display: block; font-size: 0.7rem; text-transform: uppercase; color: var(--neon); }
+        .stat span { font-size: 1.8rem; font-weight: bold; font-family: monospace; }
+
+        /* Smooth Progress Bar */
+        .progress-container {
+            position: absolute; right: 20px; top: 50%; transform: translateY(-50%);
+            width: 12px; height: 200px; background: rgba(255,255,255,0.1); border-radius: 10px; z-index: 10;
         }
-        .stat-box { background: rgba(0,0,0,0.6); padding: 10px; border: 1px solid #0f0; border-radius: 5px; }
+        #progress-fill {
+            position: absolute; bottom: 0; width: 100%; height: 0%;
+            background: var(--neon); border-radius: 10px; transition: height 0.1s ease-out;
+            box-shadow: 0 0 15px var(--neon);
+        }
+
         #countdown {
-            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-            font-size: 8rem; color: #fff; z-index: 30; display: none;
+            position: absolute; font-size: 10rem; font-weight: 900; 
+            z-index: 100; pointer-events: none; text-shadow: 0 0 20px #000;
         }
-        .controls { padding: 20px; background: #111; }
-        input { background: #222; color: #0f0; border: 1px solid #0f0; padding: 10px; width: 50px; text-align: center; }
-        button { 
-            background: #0f0; color: #000; border: none; padding: 10px 30px; 
-            font-weight: bold; cursor: pointer; border-radius: 5px;
-        }
+
+        .controls { background: #1a1a1a; padding: 25px; display: flex; gap: 15px; align-items: center; justify-content: center; z-index: 20; }
+        input { background: #333; color: white; border: 1px solid #555; padding: 12px; border-radius: 8px; width: 60px; font-size: 1.2rem; }
+        button { background: var(--neon); color: black; border: none; padding: 15px 40px; border-radius: 8px; font-weight: bold; font-size: 1.1rem; cursor: pointer; }
     </style>
 </head>
 <body>
 
-    <div class="video-container">
-        <div class="ui-overlay">
-            <div class="stat-box">REPS: <span id="counter">0</span></div>
-            <div class="stat-box">FORM: <span id="stage">UP</span></div>
+    <div class="main-container">
+        <div id="video-wrap">
+            <div class="hud">
+                <div class="stat"><label>Reps</label><span id="rep-count">0</span></div>
+                <div class="stat"><label>Status</label><span id="status-text">WAITING</span></div>
+            </div>
+
+            <div class="progress-container"><div id="progress-fill"></div></div>
+            <div id="countdown"></div>
+
+            <video id="video" autoplay muted playsinline></video>
+            <canvas id="output"></canvas>
         </div>
-        <div id="countdown">3</div>
-        <video id="video" autoplay muted playsinline></video>
-        <canvas id="output"></canvas>
+
+        <div class="controls">
+            <input type="number" id="goal" value="10">
+            <button id="startBtn">START WORKOUT</button>
+        </div>
     </div>
 
-    <div class="controls">
-        GOAL: <input type="number" id="target" value="10">
-        <button id="startBtn">READY</button>
-    </div>
+<script>
+    let detector, video, canvas, ctx;
+    let count = 0, stage = "up", goal = 10;
+    let angleHistory = []; // For smoothing
 
-    <script>
-        let detector, video, canvas, ctx;
-        let count = 0, stage = "up", target = 10;
+    const CONNECTIONS = [
+        ['left_shoulder', 'right_shoulder'], ['left_shoulder', 'left_elbow'], ['left_elbow', 'left_wrist'],
+        ['right_shoulder', 'right_elbow'], ['right_elbow', 'right_wrist'], ['left_shoulder', 'left_hip'],
+        ['right_shoulder', 'right_hip'], ['left_hip', 'right_hip']
+    ];
 
-        // Bone connections map
-        const CONNECTIONS = [
-            ['nose', 'left_eye'], ['nose', 'right_eye'], ['left_eye', 'left_ear'], ['right_eye', 'right_ear'],
-            ['left_shoulder', 'right_shoulder'], ['left_shoulder', 'left_elbow'], ['left_elbow', 'left_wrist'],
-            ['right_shoulder', 'right_elbow'], ['right_elbow', 'right_wrist'], ['left_shoulder', 'left_hip'],
-            ['right_shoulder', 'right_hip'], ['left_hip', 'right_hip'], ['left_hip', 'left_knee'],
-            ['left_knee', 'left_ankle'], ['right_hip', 'right_knee'], ['right_knee', 'right_ankle']
-        ];
+    async function init() {
+        video = document.getElementById('video');
+        canvas = document.getElementById('output');
+        ctx = canvas.getContext('2d');
+        detector = await poseDetection.createDetector(poseDetection.SupportedModels.MoveNet, {
+            modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING
+        });
+    }
 
-        async function init() {
-            video = document.getElementById('video');
-            canvas = document.getElementById('output');
-            ctx = canvas.getContext('2d');
-            detector = await poseDetection.createDetector(poseDetection.SupportedModels.MoveNet);
-        }
+    async function startCamera() {
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+            video: { facingMode: 'user', width: 640, height: 480 }, audio: false 
+        });
+        video.srcObject = stream;
+        return new Promise(r => video.onloadedmetadata = () => {
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            r();
+        });
+    }
 
-        async function setupCamera() {
-            const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false });
-            video.srcObject = stream;
-            return new Promise(r => video.onloadedmetadata = () => {
-                canvas.width = video.videoWidth;
-                canvas.height = video.videoHeight;
-                r();
-            });
-        }
+    function drawStyledSkeleton(keypoints) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        
+        // Draw bones with glow
+        ctx.shadowBlur = 10;
+        ctx.shadowColor = "#00ff41";
+        ctx.strokeStyle = "#00ff41";
+        ctx.lineWidth = 5;
+        ctx.lineCap = "round";
 
-        function drawSkeleton(keypoints) {
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            
-            // Draw Bones
-            CONNECTIONS.forEach(([p1Name, p2Name]) => {
-                const p1 = keypoints.find(k => k.name === p1Name);
-                const p2 = keypoints.find(k => k.name === p2Name);
-
-                if (p1.score > 0.3 && p2.score > 0.3) {
-                    ctx.beginPath();
-                    ctx.moveTo(p1.x, p1.y);
-                    ctx.lineTo(p2.x, p2.y);
-                    ctx.strokeStyle = '#0f0';
-                    ctx.lineWidth = 4;
-                    ctx.stroke();
-                }
-            });
-
-            // Draw Joints
-            keypoints.forEach(kp => {
-                if (kp.score > 0.3) {
-                    ctx.beginPath();
-                    ctx.arc(kp.x, kp.y, 5, 0, 2 * Math.PI);
-                    ctx.fillStyle = '#fff';
-                    ctx.fill();
-                }
-            });
-        }
-
-        function calculateAngle(a, b, c) {
-            let radians = Math.atan2(c.y - b.y, c.x - b.x) - Math.atan2(a.y - b.y, a.x - b.x);
-            let angle = Math.abs(radians * 180.0 / Math.PI);
-            return angle > 180.0 ? 360 - angle : angle;
-        }
-
-        async function detect() {
-            const poses = await detector.estimatePoses(video);
-            if (poses.length > 0) {
-                const kp = poses[0].keypoints;
-                drawSkeleton(kp);
-
-                // Check both arms, use the one with higher confidence
-                const leftArm = [kp[5], kp[7], kp[9]];  // shoulder, elbow, wrist
-                const rightArm = [kp[6], kp[8], kp[10]];
-                
-                const bestArm = (leftArm[1].score > rightArm[1].score) ? leftArm : rightArm;
-
-                if (bestArm[0].score > 0.4 && bestArm[1].score > 0.4) {
-                    const angle = calculateAngle(bestArm[0], bestArm[1], bestArm[2]);
-
-                    if (angle > 150) stage = "up";
-                    if (angle < 90 && stage === "up") {
-                        stage = "down";
-                        count++;
-                        document.getElementById('counter').innerText = count;
-                        if (navigator.vibrate) navigator.vibrate(50);
-                    }
-                    document.getElementById('stage').innerText = stage.toUpperCase();
-                }
+        CONNECTIONS.forEach(([p1n, p2n]) => {
+            const p1 = keypoints.find(k => k.name === p1n);
+            const p2 = keypoints.find(k => k.name === p2n);
+            if (p1.score > 0.3 && p2.score > 0.3) {
+                ctx.beginPath();
+                ctx.moveTo(p1.x, p1.y);
+                ctx.lineTo(p2.x, p2.y);
+                ctx.stroke();
             }
-            if (count < target) requestAnimationFrame(detect);
-        }
-
-        document.getElementById('startBtn').addEventListener('click', async () => {
-            target = document.getElementById('target').value;
-            await setupCamera();
-            
-            // Countdown logic
-            let cd = 3;
-            const cdDiv = document.getElementById('countdown');
-            cdDiv.style.display = 'block';
-            const timer = setInterval(() => {
-                cd--;
-                cdDiv.innerText = cd;
-                if (cd <= 0) {
-                    clearInterval(timer);
-                    cdDiv.style.display = 'none';
-                    detect();
-                }
-            }, 1000);
         });
 
-        init();
-    </script>
+        // Draw joints
+        ctx.shadowBlur = 0;
+        keypoints.forEach(kp => {
+            if (kp.score > 0.3) {
+                ctx.fillStyle = "white";
+                ctx.beginPath();
+                ctx.arc(kp.x, kp.y, 4, 0, 2*Math.PI);
+                ctx.fill();
+            }
+        });
+    }
+
+    function getAngle(a, b, c) {
+        let ang = Math.abs(Math.atan2(c.y-b.y, c.x-b.x) - Math.atan2(a.y-b.y, a.x-b.x)) * 180 / Math.PI;
+        return ang > 180 ? 360 - ang : ang;
+    }
+
+    async function loop() {
+        const poses = await detector.estimatePoses(video);
+        if (poses.length > 0) {
+            const kp = poses[0].keypoints;
+            drawStyledSkeleton(kp);
+
+            // Logic: Use whichever arm is clearer
+            const left = [kp[5], kp[7], kp[9]];
+            const right = [kp[6], kp[8], kp[10]];
+            const arm = (left[1].score > right[1].score) ? left : right;
+
+            if (arm[0].score > 0.4 && arm[1].score > 0.4) {
+                let rawAngle = getAngle(arm[0], arm[1], arm[2]);
+                
+                // --- SMOOTHING ENGINE ---
+                angleHistory.push(rawAngle);
+                if (angleHistory.length > 5) angleHistory.shift();
+                const smoothAngle = angleHistory.reduce((a,b) => a+b) / angleHistory.length;
+
+                // Update Progress Bar (Visualizing 160 to 90 degrees)
+                let diff = 160 - smoothAngle;
+                let percent = Math.min(Math.max((diff / 70) * 100, 0), 100);
+                document.getElementById('progress-fill').style.height = percent + "%";
+
+                // Count Logic
+                if (smoothAngle > 155) stage = "up";
+                if (smoothAngle < 90 && stage === "up") {
+                    stage = "down";
+                    count++;
+                    document.getElementById('rep-count').innerText = count;
+                    if (navigator.vibrate) navigator.vibrate([40, 30, 40]); 
+                }
+                document.getElementById('status-text').innerText = stage.toUpperCase();
+            }
+        }
+        if (count < goal) requestAnimationFrame(loop);
+        else document.getElementById('status-text').innerText = "DONE!";
+    }
+
+    document.getElementById('startBtn').addEventListener('click', async () => {
+        goal = document.getElementById('goal').value;
+        await startCamera();
+        
+        let cd = 3;
+        const cdDiv = document.getElementById('countdown');
+        const timer = setInterval(() => {
+            cdDiv.innerText = cd;
+            cd--;
+            if (cd < 0) {
+                clearInterval(timer);
+                cdDiv.innerText = "";
+                loop();
+            }
+        }, 1000);
+    });
+
+    init();
+</script>
 </body>
 </html>
