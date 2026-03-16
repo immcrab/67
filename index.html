@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Pushup Counter</title>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.11.0/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection"></script>
+  <style>
+    body { font-family: Arial; text-align: center; background: #f0f0f0; }
+    video { border: 2px solid black; }
+    #counter { font-size: 2em; margin-top: 10px; }
+    button { padding: 10px 20px; font-size: 1em; margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <h1>Pushup Counter</h1>
+  <input type="number" id="targetPushups" placeholder="Enter number of pushups" />
+  <br>
+  <button id="startBtn">Start Workout</button>
+  <div>
+    <video id="video" width="640" height="480" autoplay muted></video>
+  </div>
+  <div id="counter">0 / 0</div>
+
+  <script>
+    let detector;
+    let video = document.getElementById('video');
+    let startBtn = document.getElementById('startBtn');
+    let counterDisplay = document.getElementById('counter');
+    let targetPushups = 0;
+    let count = 0;
+    let goingDown = false; // To detect pushup motion
+
+    async function setupCamera() {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: 640, height: 480 },
+        audio: false
+      });
+      video.srcObject = stream;
+      return new Promise(resolve => {
+        video.onloadedmetadata = () => { resolve(video); };
+      });
+    }
+
+    async function loadModel() {
+      detector = await poseDetection.createDetector(poseDetection.SupportedModels.MoveNet);
+    }
+
+    function getAngle(a, b, c) {
+      // Angle at point b (in degrees)
+      let ab = {x: a.x - b.x, y: a.y - b.y};
+      let cb = {x: c.x - b.x, y: c.y - b.y};
+      let dot = (ab.x*cb.x + ab.y*cb.y);
+      let magAB = Math.sqrt(ab.x*ab.x + ab.y*ab.y);
+      let magCB = Math.sqrt(cb.x*cb.x + cb.y*cb.y);
+      let angle = Math.acos(dot / (magAB*magCB));
+      return angle * (180 / Math.PI);
+    }
+
+    async function detectPushups() {
+      const poses = await detector.estimatePoses(video);
+      if (poses.length > 0) {
+        const keypoints = poses[0].keypoints;
+        const leftShoulder = keypoints.find(k => k.name === "left_shoulder");
+        const leftElbow = keypoints.find(k => k.name === "left_elbow");
+        const leftWrist = keypoints.find(k => k.name === "left_wrist");
+
+        if (leftShoulder && leftElbow && leftWrist) {
+          const angle = getAngle(leftShoulder, leftElbow, leftWrist);
+          
+          // Simple pushup detection: arm angle < 90 => down, > 160 => up
+          if (angle < 90 && !goingDown) {
+            goingDown = true;
+          }
+          if (angle > 160 && goingDown) {
+            count++;
+            goingDown = false;
+          }
+        }
+      }
+      counterDisplay.innerText = `${count} / ${targetPushups}`;
+      if (count < targetPushups) {
+        requestAnimationFrame(detectPushups);
+      } else {
+        alert("Workout complete! 🎉");
+      }
+    }
+
+    startBtn.addEventListener('click', async () => {
+      targetPushups = parseInt(document.getElementById('targetPushups').value);
+      if (!targetPushups || targetPushups <= 0) {
+        alert("Please enter a valid number of pushups!");
+        return;
+      }
+      await setupCamera();
+      await loadModel();
+      count = 0;
+      detectPushups();
+    });
+  </script>
+</body>
+</html>
