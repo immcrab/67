@@ -3,204 +3,165 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Mobile AI Pushup Counter</title>
+    <title>AI Bone Tracker</title>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.11.0/dist/tf.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection"></script>
     <style>
         body { 
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            text-align: center; 
-            background: #121212; 
-            color: white; 
-            margin: 0; 
-            overflow-x: hidden;
-            padding-bottom: 40px;
+            font-family: 'Courier New', Courier, monospace; 
+            text-align: center; background: #000; color: #0f0; margin: 0; 
         }
-        /* Make the container responsive */
-        .video-wrapper {
-            position: relative;
-            width: 100%;
-            max-width: 640px;
-            margin: 0 auto;
-            background: #000;
-            line-height: 0; /* Removes bottom gap */
+        .video-container { position: relative; width: 100%; max-width: 640px; margin: 0 auto; }
+        video, canvas { width: 100%; height: auto; border-radius: 15px; }
+        canvas { position: absolute; left: 0; top: 0; z-index: 10; }
+        .ui-overlay {
+            position: absolute; top: 10px; left: 10px; right: 10px;
+            display: flex; justify-content: space-between; z-index: 20;
+            pointer-events: none; text-shadow: 2px 2px #000;
         }
-        video, canvas {
-            width: 100% !important;
-            height: auto !important;
+        .stat-box { background: rgba(0,0,0,0.6); padding: 10px; border: 1px solid #0f0; border-radius: 5px; }
+        #countdown {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            font-size: 8rem; color: #fff; z-index: 30; display: none;
         }
-        canvas {
-            position: absolute;
-            left: 0;
-            top: 0;
-            z-index: 10;
+        .controls { padding: 20px; background: #111; }
+        input { background: #222; color: #0f0; border: 1px solid #0f0; padding: 10px; width: 50px; text-align: center; }
+        button { 
+            background: #0f0; color: #000; border: none; padding: 10px 30px; 
+            font-weight: bold; cursor: pointer; border-radius: 5px;
         }
-        .stats-bar {
-            display: flex;
-            justify-content: space-around;
-            background: #1e1e1e;
-            padding: 15px 0;
-            font-weight: bold;
-            font-size: 1.2rem;
-            border-bottom: 2px solid #4CAF50;
-        }
-        .controls {
-            padding: 20px;
-        }
-        input {
-            padding: 12px;
-            border-radius: 8px;
-            border: none;
-            width: 80px;
-            font-size: 1rem;
-            margin-right: 10px;
-        }
-        button {
-            padding: 12px 24px;
-            font-size: 1rem;
-            background: #4CAF50;
-            color: white;
-            border: none;
-            border-radius: 8px;
-            font-weight: bold;
-            -webkit-tap-highlight-color: transparent;
-        }
-        #status { font-size: 0.9rem; color: #888; margin-top: 10px; }
-        .highlight { color: #4CAF50; }
     </style>
 </head>
 <body>
 
-    <div class="stats-bar">
-        <div>REPS: <span id="counter" class="highlight">0</span> / <span id="goalDisplay">10</span></div>
-        <div>STATE: <span id="stage" style="color: #ff9800;">UP</span></div>
-    </div>
-
-    <div class="video-wrapper">
+    <div class="video-container">
+        <div class="ui-overlay">
+            <div class="stat-box">REPS: <span id="counter">0</span></div>
+            <div class="stat-box">FORM: <span id="stage">UP</span></div>
+        </div>
+        <div id="countdown">3</div>
         <video id="video" autoplay muted playsinline></video>
         <canvas id="output"></canvas>
     </div>
 
     <div class="controls">
-        <input type="number" id="targetPushups" value="10" />
-        <button id="startBtn">START</button>
-        <p id="status">Waiting for model...</p>
+        GOAL: <input type="number" id="target" value="10">
+        <button id="startBtn">READY</button>
     </div>
 
     <script>
-        let detector;
-        const video = document.getElementById('video');
-        const canvas = document.getElementById('output');
-        const ctx = canvas.getContext('2d');
-        const startBtn = document.getElementById('startBtn');
-        const statusText = document.getElementById('status');
-        
-        let count = 0;
-        let target = 10;
-        let stage = "up";
-        let modelLoaded = false;
+        let detector, video, canvas, ctx;
+        let count = 0, stage = "up", target = 10;
 
-        async function initModel() {
-            try {
-                detector = await poseDetection.createDetector(
-                    poseDetection.SupportedModels.MoveNet, 
-                    { modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING }
-                );
-                modelLoaded = true;
-                statusText.innerText = "Ready! Place phone on floor against a wall.";
-            } catch (e) {
-                statusText.innerText = "Error: " + e.message;
-            }
+        // Bone connections map
+        const CONNECTIONS = [
+            ['nose', 'left_eye'], ['nose', 'right_eye'], ['left_eye', 'left_ear'], ['right_eye', 'right_ear'],
+            ['left_shoulder', 'right_shoulder'], ['left_shoulder', 'left_elbow'], ['left_elbow', 'left_wrist'],
+            ['right_shoulder', 'right_elbow'], ['right_elbow', 'right_wrist'], ['left_shoulder', 'left_hip'],
+            ['right_shoulder', 'right_hip'], ['left_hip', 'right_hip'], ['left_hip', 'left_knee'],
+            ['left_knee', 'left_ankle'], ['right_hip', 'right_knee'], ['right_knee', 'right_ankle']
+        ];
+
+        async function init() {
+            video = document.getElementById('video');
+            canvas = document.getElementById('output');
+            ctx = canvas.getContext('2d');
+            detector = await poseDetection.createDetector(poseDetection.SupportedModels.MoveNet);
         }
 
         async function setupCamera() {
-            const constraints = {
-                video: {
-                    facingMode: "user", // "user" for selfie, "environment" for back
-                    width: { ideal: 640 },
-                    height: { ideal: 480 }
-                },
-                audio: false
-            };
-
-            const stream = await navigator.mediaDevices.getUserMedia(constraints);
+            const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false });
             video.srcObject = stream;
-            
-            return new Promise(resolve => {
-                video.onloadedmetadata = () => {
-                    // Set canvas internal resolution to match video
-                    canvas.width = video.videoWidth;
-                    canvas.height = video.videoHeight;
-                    resolve(video);
-                };
+            return new Promise(r => video.onloadedmetadata = () => {
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                r();
             });
         }
 
-        function getAngle(p1, p2, p3) {
-            let radians = Math.atan2(p3.y - p2.y, p3.x - p2.x) - Math.atan2(p1.y - p2.y, p1.x - p2.x);
-            let angle = Math.abs(radians * 180.0 / Math.PI);
-            if (angle > 180.0) angle = 360 - angle;
-            return angle;
-        }
-
-        async function runDetection() {
-            const poses = await detector.estimatePoses(video);
+        function drawSkeleton(keypoints) {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             
+            // Draw Bones
+            CONNECTIONS.forEach(([p1Name, p2Name]) => {
+                const p1 = keypoints.find(k => k.name === p1Name);
+                const p2 = keypoints.find(k => k.name === p2Name);
+
+                if (p1.score > 0.3 && p2.score > 0.3) {
+                    ctx.beginPath();
+                    ctx.moveTo(p1.x, p1.y);
+                    ctx.lineTo(p2.x, p2.y);
+                    ctx.strokeStyle = '#0f0';
+                    ctx.lineWidth = 4;
+                    ctx.stroke();
+                }
+            });
+
+            // Draw Joints
+            keypoints.forEach(kp => {
+                if (kp.score > 0.3) {
+                    ctx.beginPath();
+                    ctx.arc(kp.x, kp.y, 5, 0, 2 * Math.PI);
+                    ctx.fillStyle = '#fff';
+                    ctx.fill();
+                }
+            });
+        }
+
+        function calculateAngle(a, b, c) {
+            let radians = Math.atan2(c.y - b.y, c.x - b.x) - Math.atan2(a.y - b.y, a.x - b.x);
+            let angle = Math.abs(radians * 180.0 / Math.PI);
+            return angle > 180.0 ? 360 - angle : angle;
+        }
+
+        async function detect() {
+            const poses = await detector.estimatePoses(video);
             if (poses.length > 0) {
                 const kp = poses[0].keypoints;
+                drawSkeleton(kp);
+
+                // Check both arms, use the one with higher confidence
+                const leftArm = [kp[5], kp[7], kp[9]];  // shoulder, elbow, wrist
+                const rightArm = [kp[6], kp[8], kp[10]];
                 
-                // Draw skeleton for feedback
-                kp.forEach(k => {
-                    if (k.score > 0.3) {
-                        ctx.beginPath();
-                        ctx.arc(k.x, k.y, 4, 0, 2 * Math.PI);
-                        ctx.fillStyle = "#4CAF50";
-                        ctx.fill();
-                    }
-                });
+                const bestArm = (leftArm[1].score > rightArm[1].score) ? leftArm : rightArm;
 
-                // Check visibility of key parts (using Right side)
-                const s = kp.find(k => k.name === "right_shoulder");
-                const e = kp.find(k => k.name === "right_elbow");
-                const w = kp.find(k => k.name === "right_wrist");
+                if (bestArm[0].score > 0.4 && bestArm[1].score > 0.4) {
+                    const angle = calculateAngle(bestArm[0], bestArm[1], bestArm[2]);
 
-                if (s.score > 0.3 && e.score > 0.3 && w.score > 0.3) {
-                    const angle = getAngle(s, e, w);
-
-                    if (angle > 155) {
-                        stage = "up";
-                    }
-                    if (angle < 95 && stage === "up") {
+                    if (angle > 150) stage = "up";
+                    if (angle < 90 && stage === "up") {
                         stage = "down";
                         count++;
                         document.getElementById('counter').innerText = count;
-                        // Haptic feedback (vibration) if supported
-                        if (navigator.vibrate) navigator.vibrate(50); 
+                        if (navigator.vibrate) navigator.vibrate(50);
                     }
                     document.getElementById('stage').innerText = stage.toUpperCase();
                 }
             }
-
-            if (count < target) {
-                requestAnimationFrame(runDetection);
-            } else {
-                statusText.innerText = "WORKOUT COMPLETE!";
-                statusText.style.color = "#4CAF50";
-            }
+            if (count < target) requestAnimationFrame(detect);
         }
 
-        startBtn.addEventListener('click', async () => {
-            if (!modelLoaded) return;
-            target = parseInt(document.getElementById('targetPushups').value);
-            document.getElementById('goalDisplay').innerText = target;
-            
-            startBtn.style.display = "none";
+        document.getElementById('startBtn').addEventListener('click', async () => {
+            target = document.getElementById('target').value;
             await setupCamera();
-            runDetection();
+            
+            // Countdown logic
+            let cd = 3;
+            const cdDiv = document.getElementById('countdown');
+            cdDiv.style.display = 'block';
+            const timer = setInterval(() => {
+                cd--;
+                cdDiv.innerText = cd;
+                if (cd <= 0) {
+                    clearInterval(timer);
+                    cdDiv.style.display = 'none';
+                    detect();
+                }
+            }, 1000);
         });
 
-        initModel();
+        init();
     </script>
 </body>
 </html>
